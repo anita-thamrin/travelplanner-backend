@@ -1,0 +1,196 @@
+version: 2.1
+
+orbs:
+  docker: circleci/docker@3.0.0
+  heroku: circleci/heroku@2.0.0
+  snyk: snyk/snyk@1.5.0
+
+jobs:
+  test:
+    docker:
+      - image: cimg/openjdk:21.0
+    steps:
+      - checkout
+      # Restore Maven cache if available
+      - restore_cache:
+          # For uniquely identifying the cache
+          key: maven-repo-{{ checksum "pom.xml" }}
+      - run:
+          name: Download dependencies
+          command: ./mvnw dependency:go-offline -B -ntp
+      # Cache is saved in CircleCI
+      - save_cache:
+          key: maven-repo-{{ checksum "pom.xml" }}
+          paths:
+            - ~/.m2
+      - run:
+          name: Run tests
+          command: ./mvnw test -Dspring.profiles.active=test
+
+  build:
+    executor: docker/docker
+    steps:
+      - setup_remote_docker
+      - checkout
+      - docker/build:
+          image: $DOCKER_REPO
+          tag: << pipeline.git.revision >>
+      # Workspace: temp storage to share files between jobs in a workflow
+      - run:
+          name: Save Docker image to workspace
+          command: |
+            mkdir -p /tmp/docker-images
+            docker save $DOCKER_REPO:<< pipeline.git.revision >> -o /tmp/docker-images/travelplanner.tar
+      # Save *.tar files in /tmp/docker-images to workspace
+      - persist_to_workspace:
+          root: /tmp/docker-images
+          paths:
+            - "*.tar"
+  # Snyk Software Composition Analysis + container scan
+  snyk_sca_container:
+    docker:
+      # snyk image provides snyk CLI pre-installed
+      # but it does not matter since we are using ths snyk orb
+      # - image: snyk/snyk-cli:docker
+      - image: cimg/node:16.10
+    environment:
+      IMAGE_NAME: thinkdaniel/test-repository
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run: docker build -t $IMAGE_NAME .
+      - snyk/scan:
+          docker-image-name: $IMAGE_NAME
+          # additional-arguments: --severity-threshold=critical
+
+  # Snyk Static Application Security Testing (code scan)
+  snyk_sast:
+    docker:
+      - image: cimg/node:16.10
+    steps:
+      - checkout
+      - snyk/scan:
+          command: code test
+
+  publish:
+    executor: docker/docker
+    steps:
+      - setup_remote_docker
+      # Copies all files previously saved in workspace into /tmp/docker-images of current env
+      - attach_workspace:
+          at: /tmp/docker-images
+      - run:
+          name: Load Docker image from workspace and tag it
+          command: |
+            docker load -i /tmp/docker-images/travelplanner.tar
+            docker tag $DOCKER_REPO:<< pipeline.git.revision >> $DOCKER_REPO:latest
+      - docker/check
+      - docker/push:
+          image: $DOCKER_REPO
+          tag: << pipeline.git.revision >>,latest
+
+  deploy:
+    executor: docker/docker
+    steps:
+      - setup_remote_docker
+      - heroku/install
+      - run:
+          name: Set Heroku stack to container
+          command: heroku stack:set container -a travelplanner
+      - run:
+          name: Login to Heroku
+          command: heroku container:login
+      - run:
+          # Heroku's DATABASE_URL does not work directly with Spring Boot
+          name: Transform DATABASE_URL for Spring Boot
+          command: |
+            DATABASE_URL=$(heroku config:get DATABASE_URL -a travelplanner)
+            echo "Original DATABASE_URL format detected"
+            
+            # Extract database components from postgres://user:pass@host:port/db
+            DB_USER=$(echo $DATABASE_URL | sed 's/postgres:\/\/\([^:]*\):.*/\1/')
+            DB_PASS=$(echo $DATABASE_URL | sed 's/postgres:\/\/[^:]*:\([^@]*\)@.*/\1/')
+            DB_HOST=$(echo $DATABASE_URL | sed 's/.*@\([^:]*\):.*/\1/')
+            DB_PORT=$(echo $DATABASE_URL | sed 's/.*:\([0-9]*\)\/.*/\1/')
+            DB_NAME=$(echo $DATABASE_URL | sed 's/.*\/\(.*\)/\1/')
+            
+            # Create clean JDBC URL without embedded credentials
+            JDBC_URL="jdbc:postgresql://$DB_HOST:$DB_PORT/$DB_NAME"
+            
+            # Set Spring Boot environment variables
+            heroku config:set \
+              JDBC_DATABASE_URL="$JDBC_URL" \
+              DATABASE_USERNAME="$DB_USER" \
+              DATABASE_PASSWORD="$DB_PASS" \
+              DATABASE_SSL=true \
+              DATABASE_SSL_MODE=require \
+              -a travelplanner
+            
+            echo "Database configuration updated for Spring Boot"
+      - run:
+          name: Pull image from Docker Hub and retag for Heroku
+          command: |
+            docker pull $DOCKER_REPO:<< pipeline.git.revision >>
+            docker tag $DOCKER_REPO:<< pipeline.git.revision >> registry.heroku.com/travelplanner/web
+            docker push registry.heroku.com/travelplanner/web
+      - heroku/release-docker-image:
+          app-name: travelplanner
+          process-types: web
+
+workflows:
+  ci_develop:
+    jobs:
+      - test
+      - build:
+          requires:
+            - test
+      - snyk_sca_container:
+          requires:
+            - build
+          filters:
+            branches:
+              only: develop
+      - snyk_sast:
+          requires:
+            - build
+          filters:
+            branches:
+              only: develop
+      - publish:
+          requires:
+            - build
+          filters:
+            branches:
+              only: develop
+  
+  ci_cd_release:
+    jobs:
+      - test
+      - build:
+          requires:
+            - test
+
+      - snyk_sca_container:
+          requires:
+            - build
+          filters:
+            branches:
+              only: release
+      - snyk_sast:
+          requires:
+            - build
+          filters:
+            branches:
+              only: release
+      - publish:
+          requires:
+            - build
+          filters:
+            branches:
+              only: release
+      - deploy:
+          requires:
+            - publish
+          filters:
+            branches:
+              only: release
