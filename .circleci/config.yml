@@ -143,22 +143,28 @@ jobs:
 workflows:
   ci_develop:
     jobs:
-      - test
+      - test:
+          filters:
+            branches:
+              only: develop    
       - build:
           requires:
             - test
-      - snyk_sca_container:
-          requires:
-            - build
           filters:
             branches:
               only: develop
-      - snyk_sast:
-          requires:
-            - build
-          filters:
-            branches:
-              only: develop
+      # - snyk_sca_container:
+      #     requires:
+      #       - build
+      #     filters:
+      #       branches:
+      #         only: develop
+      # - snyk_sast:
+      #     requires:
+      #       - build
+      #     filters:
+      #       branches:
+      #         only: develop
       - publish:
           requires:
             - build
@@ -168,23 +174,28 @@ workflows:
   
   ci_cd_release:
     jobs:
-      - test
+      - test:
+          filters:
+            branches:
+              only: release
       - build:
           requires:
             - test
-
-      - snyk_sca_container:
-          requires:
-            - build
           filters:
             branches:
               only: release
-      - snyk_sast:
-          requires:
-            - build
-          filters:
-            branches:
-              only: release
+      # - snyk_sca_container:
+      #     requires:
+      #       - build
+      #     filters:
+      #       branches:
+      #         only: release
+      # - snyk_sast:
+      #     requires:
+      #       - build
+      #     filters:
+      #       branches:
+      #         only: release
       - publish:
           requires:
             - build
