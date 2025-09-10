@@ -16,6 +16,9 @@ jobs:
           # For uniquely identifying the cache
           key: maven-repo-{{ checksum "pom.xml" }}
       - run:
+          name: Make mvnw executable
+          command: chmod +x ./mvnw
+      - run:
           name: Download dependencies
           command: ./mvnw dependency:go-offline -B -ntp
       # Cache is saved in CircleCI
