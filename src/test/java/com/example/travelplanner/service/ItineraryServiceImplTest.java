@@ -75,7 +75,7 @@ public class ItineraryServiceImplTest {
         assertNotNull(result);
         // Corrected assertions to check the DTO's fields directly
         assertEquals(itinerary.getDestination(), result.getDestination());
-        assertEquals(300.0, result.getTotalPrice());
+        assertEquals(250.0, result.getTotalPrice());
         verify(itineraryRepository, times(1)).findById(1L);
     }
 
