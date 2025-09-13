@@ -184,6 +184,7 @@ workflows:
           filters:
             branches:
               only: release
+              #hello
       # - snyk_sca_container:
       #     requires:
       #       - build
